@@ -35,94 +35,155 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode = __toESM(require("vscode"));
-function activate(context) {
-  vscode.window.showInformationMessage("Extension activated: Type Replacer Mode");
-  const replaceCommand = vscode.commands.registerCommand("no-more-any.cleanFile", async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
-    const doc = editor.document;
-    const text = doc.getText();
-    const typeOptions = [
-      "string",
-      "number",
-      "boolean",
-      "unknown",
-      "any",
-      "object",
-      "null",
-      "undefined",
-      "void",
-      "never",
-      "symbol",
-      "bigint",
-      "Date",
-      "Array<any>",
-      "Record<string, any>",
-      "Promise<any>",
-      "Function",
-      "T (generic)",
-      "custom interface/type"
-    ];
-    const selectedType = await vscode.window.showQuickPick(typeOptions, {
-      placeHolder: "Select the TypeScript type to replace ': any' with"
+async function getOllamaTypeSuggestion(prompt) {
+  try {
+    const res = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3",
+        // change the model according to req
+        prompt
+      })
     });
-    if (!selectedType) {
-      vscode.window.showInformationMessage("No type selected \u2014 operation cancelled.");
-      return;
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+    console.log("decoder ", decoder);
+    let fullText = "";
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        fullText += decoder.decode(value, { stream: true });
+      }
     }
-    const replaced = text.replace(/:\s*any\b/g, `: ${selectedType}`);
-    const fullRange = new vscode.Range(
-      doc.positionAt(0),
-      doc.positionAt(text.length)
-    );
-    await editor.edit((editBuilder) => editBuilder.replace(fullRange, replaced));
-    vscode.window.showInformationMessage(
-      `Replaced all ': any' with ': ${selectedType}'!`
-    );
-  });
-  const saveListener = vscode.workspace.onWillSaveTextDocument(async (event) => {
-    const doc = event.document;
-    if (doc.languageId !== "typescript" && doc.languageId !== "typescriptreact")
-      return;
-    const text = doc.getText();
-    if (!text.includes(": any")) return;
-    const choice = await vscode.window.showQuickPick(
-      ["Yes", "No"],
-      { placeHolder: "Replace ': any' before save?" }
-    );
-    if (choice !== "Yes") return;
-    const typeOptions = [
-      "string",
-      "number",
-      "boolean",
-      "unknown",
-      "object",
-      "null",
-      "undefined",
-      "void",
-      "never",
-      "symbol",
-      "bigint",
-      "Array<any>",
-      "Record<string, any>",
-      "Promise<any>",
-      "Function"
-    ];
-    const selectedType = await vscode.window.showQuickPick(typeOptions, {
-      placeHolder: "Select the replacement type for ': any'"
-    });
-    if (!selectedType) return;
-    const replaced = text.replace(/:\s*any\b/g, `: ${selectedType}`);
-    if (replaced === text) return;
-    const edit = new vscode.WorkspaceEdit();
-    const fullRange = new vscode.Range(
-      doc.positionAt(0),
-      doc.positionAt(text.length)
-    );
-    edit.replace(doc.uri, fullRange, replaced);
-    vscode.workspace.applyEdit(edit);
-  });
-  context.subscriptions.push(replaceCommand, saveListener);
+    console.log("full text ", fullText);
+    const match = fullText.match(/"response":"([^"]+)"/g);
+    if (!match) return "any";
+    const combined = match.map((m) => m.replace(/"response":"|"/g, "")).join("");
+    return combined.trim().split(/\s+/)[0] || "any";
+  } catch (err) {
+    console.error("Ollama error:", err);
+    return "any";
+  }
+}
+function activate(context) {
+  const typeOptions = [
+    "string",
+    "number",
+    "boolean",
+    "unknown",
+    "any",
+    "object",
+    "null",
+    "undefined",
+    "void",
+    "never",
+    "symbol",
+    "bigint",
+    "Date",
+    "Array<any>",
+    "Record<string, any>",
+    "Promise<any>",
+    "Function",
+    "T",
+    "custom interface/type"
+  ];
+  const colonProvider = vscode.languages.registerCompletionItemProvider(
+    ["typescript", "typescriptreact"],
+    {
+      async provideCompletionItems(document, position) {
+        const lineText = document.lineAt(position).text;
+        if (!/:\s*$/.test(lineText.substring(0, position.character))) return;
+        const variableMatch = lineText.match(/(?:let|const|var)\s+([\w$]+)/);
+        const variableName = variableMatch ? variableMatch[1] : "value";
+        const contextText = document.getText(
+          new vscode.Range(
+            new vscode.Position(Math.max(0, position.line - 5), 0),
+            position
+          )
+        );
+        const prompt = `
+        You are an expert TypeScript developer.
+        Given the variable declaration below, infer the most appropriate TypeScript type after the colon.
+
+        Variable:
+        ${lineText}
+
+        Code context:
+        ${contextText}
+
+        Respond with ONLY the type name (like string, number, boolean, Array<T>, etc.).
+        `;
+        const aiType = await getOllamaTypeSuggestion(prompt);
+        const aiItem = new vscode.CompletionItem(
+          `AI Suggestion \u2192 ${aiType}`,
+          vscode.CompletionItemKind.TypeParameter
+        );
+        aiItem.insertText = aiType;
+        aiItem.sortText = "0000";
+        aiItem.documentation = new vscode.MarkdownString(
+          `AI inferred this type from variable name "${variableName}".`
+        );
+        const manualItems = typeOptions.map((type) => {
+          const item = new vscode.CompletionItem(
+            type,
+            vscode.CompletionItemKind.TypeParameter
+          );
+          item.insertText = type;
+          item.sortText = "9999";
+          return item;
+        });
+        return new vscode.CompletionList([aiItem, ...manualItems], true);
+      }
+    },
+    ":"
+    // trigger
+  );
+  const genericProvider = vscode.languages.registerCompletionItemProvider(
+    ["typescript", "typescriptreact"],
+    {
+      async provideCompletionItems(document, position) {
+        const lineText = document.lineAt(position).text.substring(0, position.character);
+        if (!/\b(useState|useRef|useMemo|useCallback|useReducer|useDeferredValue|useTransition)\s*<\s*$/.test(
+          lineText
+        )) {
+          return;
+        }
+        const contextText = document.getText(
+          new vscode.Range(new vscode.Position(Math.max(0, position.line - 5), 0), position)
+        );
+        const prompt = `
+        You're an expert React + TypeScript developer.
+        Given this code, suggest the most likely generic type to place inside the angle brackets.
+
+        Code:
+        ${contextText}
+
+        Respond with only the type name (e.g. string, number, boolean, Array<T>, etc.)
+        `;
+        const aiType = await getOllamaTypeSuggestion(prompt);
+        const aiItem = new vscode.CompletionItem(
+          `AI Suggestion \u2192 ${aiType}`,
+          vscode.CompletionItemKind.TypeParameter
+        );
+        aiItem.insertText = aiType;
+        aiItem.documentation = new vscode.MarkdownString(
+          `AI inferred this generic type from surrounding code.`
+        );
+        const manualItems = typeOptions.map((type) => {
+          const item = new vscode.CompletionItem(type, vscode.CompletionItemKind.TypeParameter);
+          item.insertText = type;
+          return item;
+        });
+        return new vscode.CompletionList([aiItem, ...manualItems], true);
+      }
+    },
+    "<"
+    // trigger
+  );
+  context.subscriptions.push(colonProvider, genericProvider);
 }
 function deactivate() {
 }
