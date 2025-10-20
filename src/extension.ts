@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { promptManage } from "./prompt";
 
 // running at localhost:11434
 async function getOllamaTypeSuggestion(prompt: string): Promise<string> {
@@ -78,18 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
           )
         );
 
-        const prompt = `
-        You are an expert TypeScript developer.
-        Given the variable declaration below, infer the most appropriate TypeScript type after the colon.
-
-        Variable:
-        ${lineText}
-
-        Code context:
-        ${contextText}
-
-        Respond with ONLY the type name (like string, number, boolean, Array<T>, etc.).
-        `;
+        const prompt = promptManage(lineText, contextText, true);
 
         const aiType = await getOllamaTypeSuggestion(prompt);
 
@@ -133,25 +123,18 @@ export function activate(context: vscode.ExtensionContext) {
           new vscode.Range(new vscode.Position(Math.max(0, position.line - 5), 0), position)
         );
 
-        const prompt = `
-        You're an expert React + TypeScript developer.
-        Given this code, suggest the most likely generic type to place inside the angle brackets.
-
-        Code:
-        ${contextText}
-
-        Respond with only the type name (e.g. string, number, boolean, Array<T>, etc.)
-        `;
-
+        const prompt = promptManage(lineText, contextText, false);
         const aiType = await getOllamaTypeSuggestion(prompt);
 
         const aiItem = new vscode.CompletionItem(
           `AI Suggestion → ${aiType}`,
           vscode.CompletionItemKind.TypeParameter
         );
+
         aiItem.insertText = aiType;
         aiItem.documentation = new vscode.MarkdownString(
           `AI inferred this generic type from surrounding code.`
+          
         );
 
         const manualItems = typeOptions.map(type => {

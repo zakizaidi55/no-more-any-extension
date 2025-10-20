@@ -35,6 +35,34 @@ __export(extension_exports, {
 });
 module.exports = __toCommonJS(extension_exports);
 var vscode = __toESM(require("vscode"));
+
+// src/prompt.ts
+var promptManage = (lineText, contextText, contextTextNeeded) => {
+  let prompt = `
+    You are an expert TypeScript developer.
+    Based on the variable name and surrounding code context, infer the most accurate TypeScript type.
+
+    Guidelines:
+    - Use variable naming conventions to infer the type.
+    - Use context if available to confirm or refine the guess.
+    - Prefer primitive types (string, number, boolean) when likely.
+    - For plural variable names (ending with 's', 'List', or 'Array'), infer Array<T>.
+    - For names containing words like 'count', 'age', 'id', or 'length', infer number.
+    - For names containing 'is', 'has', 'should', or 'can', infer boolean.
+    - For names like 'phoneNo', 'email', or 'address', infer string.
+    - If unclear, default to unknown.
+    - Respond with ONLY the TypeScript type name (no explanation, no punctuation).
+
+    Variable:
+    ${lineText}`;
+  if (contextTextNeeded) {
+    prompt += `Code context:${contextText}`;
+  }
+  console.log("Prompt ", prompt);
+  return prompt;
+};
+
+// src/extension.ts
 async function getOllamaTypeSuggestion(prompt) {
   try {
     const res = await fetch("http://localhost:11434/api/generate", {
@@ -95,7 +123,8 @@ function activate(context) {
     {
       async provideCompletionItems(document, position) {
         const lineText = document.lineAt(position).text;
-        if (!/:\s*$/.test(lineText.substring(0, position.character))) return;
+        if (!/:\s*$/.test(lineText.substring(0, position.character)))
+          return;
         const variableMatch = lineText.match(/(?:let|const|var)\s+([\w$]+)/);
         const variableName = variableMatch ? variableMatch[1] : "value";
         const contextText = document.getText(
@@ -104,18 +133,7 @@ function activate(context) {
             position
           )
         );
-        const prompt = `
-        You are an expert TypeScript developer.
-        Given the variable declaration below, infer the most appropriate TypeScript type after the colon.
-
-        Variable:
-        ${lineText}
-
-        Code context:
-        ${contextText}
-
-        Respond with ONLY the type name (like string, number, boolean, Array<T>, etc.).
-        `;
+        const prompt = promptManage(lineText, contextText, true);
         const aiType = await getOllamaTypeSuggestion(prompt);
         const aiItem = new vscode.CompletionItem(
           `AI Suggestion \u2192 ${aiType}`,
@@ -146,23 +164,13 @@ function activate(context) {
     {
       async provideCompletionItems(document, position) {
         const lineText = document.lineAt(position).text.substring(0, position.character);
-        if (!/\b(useState|useRef|useMemo|useCallback|useReducer|useDeferredValue|useTransition)\s*<\s*$/.test(
-          lineText
-        )) {
+        if (!/\b(useState|useRef|useMemo|useCallback|useReducer|useDeferredValue|useTransition)\s*<\s*$/.test(lineText)) {
           return;
         }
         const contextText = document.getText(
           new vscode.Range(new vscode.Position(Math.max(0, position.line - 5), 0), position)
         );
-        const prompt = `
-        You're an expert React + TypeScript developer.
-        Given this code, suggest the most likely generic type to place inside the angle brackets.
-
-        Code:
-        ${contextText}
-
-        Respond with only the type name (e.g. string, number, boolean, Array<T>, etc.)
-        `;
+        const prompt = promptManage(lineText, contextText, false);
         const aiType = await getOllamaTypeSuggestion(prompt);
         const aiItem = new vscode.CompletionItem(
           `AI Suggestion \u2192 ${aiType}`,
